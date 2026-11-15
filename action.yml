@@ -1,0 +1,107 @@
+name: meterproof
+description: Check that Stripe will bill the usage your app recorded, before the invoice finalizes.
+author: Vibe Frontier
+branding:
+  icon: check-circle
+  color: green
+
+inputs:
+  config:
+    description: Path to meterproof.yml
+    default: meterproof.yml
+  period:
+    description: month-to-date, previous-month, last-7-days or last-24-hours (ignored when start is set)
+    default: month-to-date
+  start:
+    description: Window start (UTC date or ISO 8601 time). Overrides period.
+    default: ""
+  end:
+    description: Window end, exclusive. Defaults to now.
+    default: ""
+  fail-on:
+    description: Problem types that fail the step (all, none, or a comma list of unbilled, unmapped, no_subscription, overbilled, stripe_only)
+    default: all
+  settle-minutes:
+    description: Override window.settle_minutes for this run (e.g. 15 for a closed-period check right after the period ends)
+    default: ""
+  postgres:
+    description: Install the Postgres driver (set to true when the ledger is a postgres query)
+    default: "false"
+  python-version:
+    description: Python version used to run meterproof
+    default: "3.12"
+
+outputs:
+  ok:
+    description: "true when no problems were found"
+    value: ${{ steps.check.outputs.ok }}
+  problems:
+    description: Number of problems found
+    value: ${{ steps.check.outputs.problems }}
+  revenue-at-risk:
+    description: Recorded usage that will not be billed, in the price currency (empty when not estimable)
+    value: ${{ steps.check.outputs.revenue_at_risk }}
+  report-markdown:
+    description: Path to the Markdown report
+    value: ${{ steps.check.outputs.report_markdown }}
+  report-json:
+    description: Path to the JSON report
+    value: ${{ steps.check.outputs.report_json }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install meterproof
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WITH_POSTGRES: ${{ inputs.postgres }}
+      run: |
+        if [ "$WITH_POSTGRES" = "true" ]; then
+          python -m pip install --disable-pip-version-check -q "$ACTION_PATH[postgres]"
+        else
+          python -m pip install --disable-pip-version-check -q "$ACTION_PATH"
+        fi
+
+    - name: Reconcile usage against Stripe
+      id: check
+      shell: bash
+      env:
+        MP_CONFIG: ${{ inputs.config }}
+        MP_PERIOD: ${{ inputs.period }}
+        MP_START: ${{ inputs.start }}
+        MP_END: ${{ inputs.end }}
+        MP_FAIL_ON: ${{ inputs.fail-on }}
+        MP_SETTLE: ${{ inputs.settle-minutes }}
+      run: |
+        md="$RUNNER_TEMP/meterproof-report.md"
+        js="$RUNNER_TEMP/meterproof-report.json"
+        args=(check --config "$MP_CONFIG" --markdown "$md" --json "$js" --fail-on "$MP_FAIL_ON" --quiet)
+        if [ -n "$MP_SETTLE" ]; then args+=(--settle-minutes "$MP_SETTLE"); fi
+        if [ -n "$MP_START" ]; then
+          args+=(--start "$MP_START")
+          if [ -n "$MP_END" ]; then args+=(--end "$MP_END"); fi
+        else
+          args+=(--period "$MP_PERIOD")
+        fi
+        set +e
+        meterproof "${args[@]}"
+        status=$?
+        set -e
+        echo "report_markdown=$md" >> "$GITHUB_OUTPUT"
+        echo "report_json=$js" >> "$GITHUB_OUTPUT"
+        if [ -f "$js" ]; then
+          cat "$md" >> "$GITHUB_STEP_SUMMARY"
+          python - "$js" >> "$GITHUB_OUTPUT" <<'PY'
+        import json, sys
+        doc = json.load(open(sys.argv[1]))
+        print(f"ok={'true' if doc['ok'] else 'false'}")
+        print(f"problems={len(doc['findings'])}")
+        print(f"revenue_at_risk={doc['revenue_at_risk'] or ''}")
+        PY
+        fi
+        exit $status

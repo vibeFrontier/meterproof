@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+meterproof-demo/
+meterproof-report.*
+node_modules/
+.wrangler/
+.dev.vars

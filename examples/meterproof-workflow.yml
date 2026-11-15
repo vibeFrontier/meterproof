@@ -1,0 +1,25 @@
+# .github/workflows/meterproof.yml
+# Checks every morning, and on demand, that Stripe will bill the usage your app recorded.
+name: meterproof
+
+on:
+  schedule:
+    - cron: "15 6 * * *" # 06:15 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vibeFrontier/meterproof@v0
+        with:
+          config: meterproof.yml
+          period: month-to-date
+          postgres: "true"
+        env:
+          STRIPE_API_KEY: ${{ secrets.METERPROOF_STRIPE_KEY }} # restricted, read-only
+          DATABASE_URL: ${{ secrets.METERPROOF_DATABASE_URL }} # read-only role
